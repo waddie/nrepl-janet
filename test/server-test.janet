@@ -105,6 +105,36 @@
         (break)))
     (assert saw-interrupted "interrupt of infinite loop yields interrupted"))
 
+  # --- stdin: getline drives need-input then consumes a stdin op --------------
+  (do
+    (client/send-msg c {:op "eval" :id "si1" :session session
+                        :code "(string \"got:\" (getline))"})
+    # The eval blocks reading input; first drain up to the need-input status.
+    (var saw-need-input false)
+    (var guard 0)
+    (while (< guard 8)
+      (def m (client/recv-msg c))
+      (++ guard)
+      (if (nil? m) (break))
+      (when (and (get m :status)
+                 (some (fn [s] (= "need-input" (string s))) (get m :status)))
+        (set saw-need-input true)
+        (break)))
+    (assert saw-need-input "reading input emits a need-input status")
+    # Supply a line, then collect the rest of this eval's responses.
+    (client/send-msg c {:op "stdin" :id "si2" :session session :stdin "hello\n"})
+    (def rest @[])
+    (var done false)
+    (while (not done)
+      (def m (client/recv-msg c))
+      (if (nil? m) (break))
+      (array/push rest m)
+      (when (and (= "si1" (string (get m :id "")))
+                 (find-status [m] "done"))
+        (set done true)))
+    (assert (string/find "got:hello" (or (value-of rest) ""))
+            "stdin op feeds the blocked getline"))
+
   # --- lookup returns doc/arglists for a known symbol -------------------------
   (let [msgs (client/request c {:op "lookup" :id "k1" :session session :sym "map"})
         m (find-status msgs "done")

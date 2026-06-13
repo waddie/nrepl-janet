@@ -23,11 +23,17 @@ Working server covering the operations editors depend on:
 | `ls-sessions` | list active sessions                                          |
 | `lookup`      | doc / arglists / source location for a symbol                 |
 | `completions` | prefix completion over the session’s bindings                 |
-
-Not yet implemented: `stdin`/`need-input`.
+| `stdin`       | feed input to a blocked read (see stdin caveat)               |
 
 **Interrupt caveat:** cancellation is cooperative. `ev/cancel` only takes effect
 when the evaluation yields to the event loop (I/O, `ev/sleep`, channel ops).
+
+**Stdin caveat:** input is read through `getline`, which is shadowed during
+evaluation to emit `need-input` and wait for a `stdin` op. Janet’s real
+`getline` reads the server process’s blocking C `stdin`, which can’t signal
+`need-input` and would stall the single-threaded event loop — so code that reads
+input via other means (e.g. `(file/read stdin :line)`) is not redirected. An
+empty `stdin` payload signals end-of-input.
 
 ## Installation
 

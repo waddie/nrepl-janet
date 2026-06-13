@@ -24,7 +24,7 @@
   "Ops advertised by `describe`. Clients query this on connect, so partial
   coverage degrades gracefully instead of breaking the client."
   ["clone" "close" "describe" "eval" "load-file"
-   "interrupt" "ls-sessions" "lookup" "completions"])
+   "interrupt" "ls-sessions" "lookup" "completions" "stdin"])
 
 (defn- env-entry
   "Resolve `sym` in `env`, walking the prototype chain (so core bindings and
@@ -146,6 +146,19 @@
                    :session (get msg :session)
                    :status ["done"]}))
 
+(defn- op-stdin
+  "Deliver client-supplied input to the session's running eval (via its `:stdin`
+  channel, where a blocked `getline` is waiting). An empty `:stdin` payload
+  signals end-of-input."
+  [msg ctx]
+  (if-let [s (session-for ctx msg)]
+    (do
+      (ev/give (in s :stdin) (string (get msg :stdin "")))
+      ((in ctx :send) {:id (get msg :id)
+                       :session (get msg :session)
+                       :status ["done"]}))
+    (unknown-session ctx msg)))
+
 (defn- op-lookup
   "Return doc/arglists/source metadata for a symbol (`:sym`) in the session env."
   [msg ctx]
@@ -183,6 +196,7 @@
    "eval" op-eval
    "load-file" op-load-file
    "interrupt" op-interrupt
+   "stdin" op-stdin
    "lookup" op-lookup
    "completions" op-completions})
 

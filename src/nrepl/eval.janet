@@ -37,6 +37,9 @@
   (def env (in session :env))
   (def base {:id id :session (in session :id)})
   (def obuf @"")
+  (def stdin-chan (in session :stdin))
+  (def inbuf @"") # bytes delivered by `stdin` ops, not yet consumed
+  (var eof false) # set once the client signals end-of-input
   (def marker @{}) # unique identity used to recognise our own interrupt cancel
   (var interrupted false)
 
@@ -44,6 +47,52 @@
     (when (pos? (length obuf))
       (send (merge base {:out (string obuf)}))
       (buffer/clear obuf)))
+
+  (defn pull-input
+    "Block until the client delivers more stdin, appending it to `inbuf` and
+    returning true; return false at end-of-input. Emits a `need-input` status
+    first (so the client knows to prompt) unless input is already buffered."
+    []
+    (if eof
+      false
+      (do
+        (flush-out)
+        (when (zero? (ev/count stdin-chan))
+          (send (merge base {:status ["need-input"]})))
+        (def data (ev/take stdin-chan))
+        (if (or (nil? data) (empty? data))
+          (do (set eof true) false)
+          (do (buffer/push-string inbuf data) true)))))
+
+  # Shadow `getline` so user code that reads a line drives the nREPL stdin flow
+  # (need-input / stdin ops) rather than blocking on the server's own stdin --
+  # the real getline reads a C FILE* with blocking fgetc, which would freeze the
+  # single-threaded event loop and can't signal need-input.
+  (defn nrepl-getline [&opt prompt buf _env]
+    (default buf @"")
+    (buffer/clear buf)
+    (when (and prompt (not (empty? prompt)))
+      (send (merge base {:out (string prompt)})))
+    (var reading true)
+    (while reading
+      (if-let [nl (string/find "\n" inbuf)]
+        (do
+          (buffer/push-string buf (string/slice inbuf 0 (inc nl)))
+          (def leftover (string (string/slice inbuf (inc nl))))
+          (buffer/clear inbuf)
+          (buffer/push-string inbuf leftover)
+          (set reading false))
+        (when (not (pull-input))
+          (buffer/push-string buf inbuf) # flush any partial trailing line
+          (buffer/clear inbuf)
+          (set reading false))))
+    buf)
+  (put env 'getline
+       @{:value nrepl-getline
+         :doc (string "(getline &opt prompt buf env)\n\nRead a line of input "
+                      "from the nREPL client: emits a need-input status and "
+                      "waits for a stdin op. Returns the buffer, including the "
+                      "trailing newline (or whatever precedes end-of-input).")})
 
   # The evaluator runs in run-context's inner eval fiber; binding :out/:err
   # here (not around run-context) is what actually captures user output.

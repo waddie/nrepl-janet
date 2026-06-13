@@ -13,6 +13,7 @@
 ###   {:id <hex string>            opaque session id sent to the client
 ###    :env <make-env result>      persistent compilation/runtime environment
 ###    :in <ev/chan of thunks>     job queue drained serially by the worker
+###    :stdin <ev/chan of strings> input delivered by `stdin` ops, read by evals
 ###    :current-eval <handle|nil>  {:fiber f :marker m} of a running eval, for interrupt
 ###    :ns <string>}               reported namespace ("user" by default)
 
@@ -31,7 +32,8 @@
   (def env (if parent-env (make-env parent-env) (make-env)))
   (put env :pretty-format "%.20Q")
   (def id (gen-id))
-  (def session @{:id id :env env :in (ev/chan 64) :current-eval nil :ns "user"})
+  (def session @{:id id :env env :in (ev/chan 64) :stdin (ev/chan 64)
+                 :current-eval nil :ns "user"})
   (put sessions id session)
   session)
 
@@ -53,4 +55,5 @@
   (when-let [ce (in session :current-eval)]
     (protect (ev/cancel (in ce :fiber) (in ce :marker))))
   (ev/chan-close (in session :in))
+  (ev/chan-close (in session :stdin)) # unblock any eval waiting on input (EOF)
   (put sessions (in session :id) nil))

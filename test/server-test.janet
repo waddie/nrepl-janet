@@ -177,13 +177,13 @@
     (assert (= "" (string (get info :ns ""))) "module-less symbol has a blank namespace")
     (assert (get info :doc) "lookup reports a docstring for map"))
 
-  # --- lookup splits a module-qualified symbol into ns + short name -----------
+  # --- lookup keeps a module-qualified symbol whole, with a blank ns ----------
   (let [msgs (client/request c {:op "lookup" :id "k3" :session session :sym "math/abs"})
         m (find-status msgs "done")
         info (get m :info)]
     (assert info "lookup returns an info map for a qualified symbol")
-    (assert (= "abs" (string (get info :name))) "lookup strips the module from the name")
-    (assert (= "math" (string (get info :ns))) "lookup reports the module as the namespace"))
+    (assert (= "math/abs" (string (get info :name))) "lookup reports the full symbol as the name")
+    (assert (= "" (string (get info :ns ""))) "qualified symbol still reports a blank namespace"))
 
   # --- lookup of an unknown symbol yields an empty info map -------------------
   (let [msgs (client/request c {:op "lookup" :id "k2" :session session :sym "no-such-binding-xyz"})
@@ -202,13 +202,21 @@
     (assert (all (fn [x] (= "" (string (get x :ns "")))) cands)
             "module-less completions report a blank namespace"))
 
-  # --- completions split module-qualified bindings into ns + short name -------
+  # --- completions keep the module-qualified candidate resolvable -------------
+  # The candidate is the full `math/abs` (what the client inserts and then echoes
+  # back as lookup's `:sym`); `:ns` is blank so an "insert namespaced" client
+  # does not re-prefix it into `math/math/abs`.
   (let [msgs (client/request c {:op "completions" :id "p2" :session session :prefix "math/a"})
         m (find-status msgs "done")
         cands (get m :completions)
-        abs (find (fn [x] (= "abs" (string (get x :candidate)))) cands)]
-    (assert abs "completions for 'math/a' includes abs as a short candidate")
-    (assert (= "math" (string (get abs :ns))) "qualified completion reports its module as namespace"))
+        abs (find (fn [x] (= "math/abs" (string (get x :candidate)))) cands)]
+    (assert abs "completions for 'math/a' includes math/abs as a full candidate")
+    (assert (= "" (string (get abs :ns ""))) "qualified completion reports a blank namespace")
+    # the candidate must round-trip through lookup and resolve to its doc
+    (let [lk (client/request c {:op "lookup" :id "p2b" :session session
+                                :sym (string (get abs :candidate))})
+          info (get (find-status lk "done") :info)]
+      (assert (get info :doc) "the completion candidate resolves to a docstring via lookup")))
 
   # --- close tears the session down -------------------------------------------
   (let [msgs (client/request c {:op "close" :id "x1" :session session})]

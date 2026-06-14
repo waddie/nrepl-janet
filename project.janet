@@ -4,7 +4,7 @@
   :author "Tom Waddington"
   :license "MIT"
   :dependencies ["https://github.com/janet-lang/spork.git"]
-  :version "0.0.4"
+  :version "0.1,0"
   :url "https://github.com/waddie/nrepl-janet"
   :repo "git+https://github.com/waddie/nrepl-janet")
 

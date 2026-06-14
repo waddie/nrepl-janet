@@ -47,17 +47,6 @@
     (or (function? v) (cfunction? v)) "function"
     "var"))
 
-(defn- split-symbol
-  "Split a Janet symbol string into its module namespace and short name:
-  `math/abs` -> `[\"math\" \"abs\"]`, `ev/go` -> `[\"ev\" \"go\"]`. Symbols with
-  no module part return an empty namespace, including the division operator `/`
-  (a real binding) and any name with a leading or trailing slash."
-  [sym-str]
-  (def idx (last (string/find-all "/" sym-str)))
-  (if (and idx (> idx 0) (< idx (dec (length sym-str))))
-    [(string/slice sym-str 0 idx) (string/slice sym-str (inc idx))]
-    ["" sym-str]))
-
 (defn- arglists-of
   "Janet does not retain textual parameter names at runtime, but its docstrings
   conventionally lead with the signature line(s). Return that leading block as
@@ -71,8 +60,10 @@
   "Build the `info` map for symbol `sym-str` in `session`, or nil if unbound."
   [session sym-str]
   (when-let [entry (env-entry (in session :env) (symbol sym-str))]
-    (def [ns name] (split-symbol sym-str))
-    (def info @{:name name :ns ns})
+    # Report the full symbol as the name and leave `:ns` blank — Janet's module
+    # prefix is part of the binding's identity, not a separate namespace to be
+    # recombined by the client. See `op-completions`.
+    (def info @{:name sym-str :ns ""})
     (when-let [d (get entry :doc)] (put info :doc d))
     (when-let [a (arglists-of entry)] (put info :arglists a))
     (when-let [sm (get entry :source-map)]
@@ -191,9 +182,15 @@
           syms (filter (fn [sym] (string/has-prefix? prefix (string sym)))
                        (all-bindings env))
           candidates (map (fn [sym]
-                            (def [ns name] (split-symbol (string sym)))
-                            {:candidate name
-                             :ns ns
+                            # `:candidate` is the full, resolvable symbol
+                            # (`bm/print-canvas`, not `print-canvas`): the client
+                            # inserts it verbatim and echoes it back as `lookup`'s
+                            # `:sym`, which only resolves with the module prefix
+                            # intact. `:ns` is left blank — the module is already
+                            # in the candidate, so reporting it again would make
+                            # an "insert namespaced" client produce `bm/bm/...`.
+                            {:candidate (string sym)
+                             :ns ""
                              :type (binding-type (env-entry env sym))})
                           syms)]
       ((in ctx :send) {:id (get msg :id)

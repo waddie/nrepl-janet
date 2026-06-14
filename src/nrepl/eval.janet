@@ -30,10 +30,15 @@
   "Evaluate `code` in `session`, streaming nREPL responses through `send` (a
   1-arg function taking a response dict). `id` is the originating request id.
   Optional `source` sets the source path used in error locations and source
-  maps. Runs synchronously in the caller (the session worker) and returns when
+  maps. Optional `line`/`column` are the position in `source` where `code`
+  starts (the standard nREPL `eval` params) so error locations and source maps
+  reflect the form's real position in the file rather than starting at line 1.
+  Runs synchronously in the caller (the session worker) and returns when
   evaluation is complete, interrupted, or has errored."
-  [session code send id &opt source]
+  [session code send id &opt source line column]
   (default source "nrepl")
+  (default line 1)
+  (default column 1)
   (def env (in session :env))
   (def base {:id id :session (in session :id)})
   (def obuf @"")
@@ -94,11 +99,19 @@
                       "waits for a stdin op. Returns the buffer, including the "
                       "trailing newline (or whatever precedes end-of-input).")})
 
-  # The evaluator runs in run-context's inner eval fiber; binding :out/:err
-  # here (not around run-context) is what actually captures user output.
+  # The evaluator runs in run-context's inner eval fiber, whose environment IS
+  # the session env. Bind :out/:err with `setdyn` (not `with-dyns`) so the
+  # thunk keeps running in *this* fiber: `with-dyns` evaluates its body in a
+  # fresh child fiber whose environment is a *child* of the session env, so any
+  # top-level `use`/`import`/`setdyn` in user code would write to that throwaway
+  # env and never persist across evals. (`def`/`var` survive regardless -- they
+  # bind at compile time against the session env -- which is what made the bug
+  # subtle: state mutations persisted, but module imports silently did not.)
   (def evaluator
     (fn nrepl-evaluator [thunk &]
-      (def v (with-dyns [:out obuf :err obuf] (thunk)))
+      (setdyn :out obuf)
+      (setdyn :err obuf)
+      (def v (thunk))
       (flush-out)
       (send (merge base {:value (format-value v) :ns (in session :ns)}))
       v))
@@ -138,6 +151,9 @@
   (defn chunks [buf p]
     (when (not sent)
       (set sent true)
+      # Offset the parser to the form's real position so source maps and error
+      # locations report file lines, not lines relative to this snippet.
+      (parser/where p line column)
       (buffer/push-string buf code))
     buf)
 

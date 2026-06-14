@@ -47,6 +47,17 @@
     (or (function? v) (cfunction? v)) "function"
     "var"))
 
+(defn- split-symbol
+  "Split a Janet symbol string into its module namespace and short name:
+  `math/abs` -> `[\"math\" \"abs\"]`, `ev/go` -> `[\"ev\" \"go\"]`. Symbols with
+  no module part return an empty namespace, including the division operator `/`
+  (a real binding) and any name with a leading or trailing slash."
+  [sym-str]
+  (def idx (last (string/find-all "/" sym-str)))
+  (if (and idx (> idx 0) (< idx (dec (length sym-str))))
+    [(string/slice sym-str 0 idx) (string/slice sym-str (inc idx))]
+    ["" sym-str]))
+
 (defn- arglists-of
   "Janet does not retain textual parameter names at runtime, but its docstrings
   conventionally lead with the signature line(s). Return that leading block as
@@ -60,7 +71,8 @@
   "Build the `info` map for symbol `sym-str` in `session`, or nil if unbound."
   [session sym-str]
   (when-let [entry (env-entry (in session :env) (symbol sym-str))]
-    (def info @{:name sym-str :ns (in session :ns)})
+    (def [ns name] (split-symbol sym-str))
+    (def info @{:name name :ns ns})
     (when-let [d (get entry :doc)] (put info :doc d))
     (when-let [a (arglists-of entry)] (put info :arglists a))
     (when-let [sm (get entry :source-map)]
@@ -123,7 +135,8 @@
     (ev/give (in s :in)
              (fn eval-job []
                (evl/evaluate s (string (get msg :code "")) (in ctx :send) (get msg :id)
-                             (when (get msg :file) (string (get msg :file))))))
+                             (when (get msg :file) (string (get msg :file)))
+                             (get msg :line) (get msg :column))))
     (unknown-session ctx msg)))
 
 (defn- op-load-file
@@ -178,8 +191,9 @@
           syms (filter (fn [sym] (string/has-prefix? prefix (string sym)))
                        (all-bindings env))
           candidates (map (fn [sym]
-                            {:candidate (string sym)
-                             :ns (in s :ns)
+                            (def [ns name] (split-symbol (string sym)))
+                            {:candidate name
+                             :ns ns
                              :type (binding-type (env-entry env sym))})
                           syms)]
       ((in ctx :send) {:id (get msg :id)

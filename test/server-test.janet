@@ -60,10 +60,43 @@
     (assert (find-status msgs "eval-error") "error yields eval-error status")
     (assert (find-status msgs "done") "errored eval still completes with done"))
 
+  # --- error locations honour the client-supplied line/column -----------------
+  # nREPL clients send the position where `code` starts; without it the parser
+  # would report every form on line 1 regardless of its real file position.
+  (let [msgs (client/request c {:op "eval" :id "ln1" :session session
+                                :file "demo.janet" :line 10
+                                :code "(error \"boom\")"})
+        err (string/join (map (fn [m] (string (get m :err ""))) msgs))]
+    (assert (find-status msgs "eval-error") "offset eval still errors")
+    (assert (string/find "line 10" err)
+            "error reports the client-supplied line, not line 1"))
+
+  # The offset tracks subsequent lines too, not just the first form.
+  (let [msgs (client/request c {:op "eval" :id "ln2" :session session
+                                :file "demo.janet" :line 10
+                                :code "\n\n(error \"boom\")"})
+        err (string/join (map (fn [m] (string (get m :err ""))) msgs))]
+    (assert (string/find "line 12" err)
+            "two leading newlines from line 10 puts the error on line 12"))
+
   # --- def persists within a session ------------------------------------------
   (client/request c {:op "eval" :id "e4" :session session :code "(def x 99)"})
   (let [msgs (client/request c {:op "eval" :id "e5" :session session :code "x"})]
     (assert (= "99" (value-of msgs)) "def persists across requests in a session"))
+
+  # --- use/import persist within a session (regression) -----------------------
+  # `use`/`import` mutate the runtime env, unlike `def`/`var` which bind at
+  # compile time. The evaluator must run user code in the session env itself,
+  # not a child fiber env, or the imported bindings vanish on the next eval.
+  (client/request c {:op "eval" :id "u1" :session session :code "(use spork/math)"})
+  (let [msgs (client/request c {:op "eval" :id "u2" :session session :code "(type sum)"})]
+    (assert (= ":function" (value-of msgs))
+            "a binding brought in by `use` is visible on a later eval"))
+
+  # --- setdyn persists within a session (regression) --------------------------
+  (client/request c {:op "eval" :id "u3" :session session :code "(setdyn :my-dyn 7)"})
+  (let [msgs (client/request c {:op "eval" :id "u4" :session session :code "(dyn :my-dyn)"})]
+    (assert (= "7" (value-of msgs)) "a dynamic binding set with setdyn persists"))
 
   # --- a def is NOT visible in a different session ----------------------------
   (def session2
@@ -141,7 +174,16 @@
         info (get m :info)]
     (assert info "lookup returns an info map")
     (assert (= "map" (string (get info :name))) "lookup reports the symbol name")
+    (assert (= "" (string (get info :ns ""))) "module-less symbol has a blank namespace")
     (assert (get info :doc) "lookup reports a docstring for map"))
+
+  # --- lookup splits a module-qualified symbol into ns + short name -----------
+  (let [msgs (client/request c {:op "lookup" :id "k3" :session session :sym "math/abs"})
+        m (find-status msgs "done")
+        info (get m :info)]
+    (assert info "lookup returns an info map for a qualified symbol")
+    (assert (= "abs" (string (get info :name))) "lookup strips the module from the name")
+    (assert (= "math" (string (get info :ns))) "lookup reports the module as the namespace"))
 
   # --- lookup of an unknown symbol yields an empty info map -------------------
   (let [msgs (client/request c {:op "lookup" :id "k2" :session session :sym "no-such-binding-xyz"})
@@ -156,7 +198,17 @@
     (assert (not (empty? cands)) "completions returns candidates")
     (assert (some (fn [n] (= "map" n)) names) "completions for 'map' includes map")
     (assert (all (fn [n] (string/has-prefix? "map" n)) names)
-            "every completion candidate matches the prefix"))
+            "every completion candidate matches the prefix")
+    (assert (all (fn [x] (= "" (string (get x :ns "")))) cands)
+            "module-less completions report a blank namespace"))
+
+  # --- completions split module-qualified bindings into ns + short name -------
+  (let [msgs (client/request c {:op "completions" :id "p2" :session session :prefix "math/a"})
+        m (find-status msgs "done")
+        cands (get m :completions)
+        abs (find (fn [x] (= "abs" (string (get x :candidate)))) cands)]
+    (assert abs "completions for 'math/a' includes abs as a short candidate")
+    (assert (= "math" (string (get abs :ns))) "qualified completion reports its module as namespace"))
 
   # --- close tears the session down -------------------------------------------
   (let [msgs (client/request c {:op "close" :id "x1" :session session})]

@@ -8,6 +8,12 @@ Clojure community. A conforming nREPL server lets Janet plug into the existing
 ecosystem of nREPL clients and editor integrations. This library speaks the
 standard bencode-over-socket nREPL wire protocol.
 
+## Demo
+
+![An asciinema recording of interacting with nrepl-janet in Helix via nrepl.hx](https://github.com/waddie/nrepl-janet/blob/main/images/nrepl-janet.gif?raw=true)
+
+Interacting with an `nrepl-janet` server via [nrepl.hx](https://github.com/waddie/nrepl.hx) in [Helix](https://helix-editor.com/).
+
 ## Status
 
 Working server covering the operations editors depend on:

@@ -18,7 +18,7 @@
 
 (def server-version
   "Version reported under `versions` in `describe`."
-  "0.1.1")
+  "0.2.0")
 
 (def supported-ops
   "Ops advertised by `describe`. Clients query this on connect, so partial

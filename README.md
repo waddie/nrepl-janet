@@ -1,6 +1,6 @@
 # nrepl-janet
 
-An [nREPL](https://nrepl.org) server library for the
+An [nREPL](https://nrepl.org) client/server library for the
 [Janet](https://janet-lang.org) programming language.
 
 nREPL is a language-agnostic, message-oriented network REPL protocol from the

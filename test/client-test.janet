@@ -1,0 +1,69 @@
+(use spork/test)
+(import ../src/nrepl/server :as server)
+(import ../src/nrepl/client :as client)
+
+# Exercises the multiplexing client: id-routed responses, merged results, state
+# persistence across calls, and (the load-bearing case) an interrupt sent while
+# an eval is still in flight on the same connection.
+
+(start-suite "client-mux")
+
+(def host "127.0.0.1")
+(def port "17899")
+
+(defn- status-has?
+  [res token]
+  (some (fn [s] (= token s)) (get res :status)))
+
+(with [listener (server/server host port)]
+  (def conn (client/connect-mux host port))
+
+  # --- describe via the merged-result API -------------------------------------
+  (let [r (client/describe conn)]
+    (assert (get-in r [:ops :eval]) "describe advertises eval op")
+    (assert (get-in r [:versions :janet]) "describe reports janet version"))
+
+  # --- clone yields a new session id ------------------------------------------
+  (def session
+    (let [r (client/clone-session conn)]
+      (assert (get r :new-session) "clone returns new-session")
+      (string (get r :new-session))))
+
+  # --- a merged eval result collapses value/out/status ------------------------
+  (let [r (client/eval-code conn session "(+ 1 2)")]
+    (assert (= "3" (string (get r :value))) "eval (+ 1 2) merges to value 3")
+    (assert (status-has? r "done") "eval completes with done"))
+
+  (let [r (client/eval-code conn session "(print \"hi\")")]
+    (assert (string/has-prefix? "hi" (get r :out)) "stdout captured in merged :out"))
+
+  (let [r (client/eval-code conn session "(error \"boom\")")]
+    (assert (status-has? r "eval-error") "error surfaces as eval-error status"))
+
+  # --- state accrues across separate calls (the whole point of the daemon) ----
+  (client/eval-code conn session "(def x 99)")
+  (let [r (client/eval-code conn session "x")]
+    (assert (= "99" (string (get r :value))) "def persists across mux calls"))
+
+  # --- interrupt while an eval is in flight (response demultiplexing) ----------
+  # Start a yielding infinite loop, collect its result on a separate fiber, then
+  # from this fiber send an interrupt for the same session. If responses are
+  # routed by id, the eval's collector sees `interrupted`/`done` and unblocks.
+  (let [eval-id (client/send-async conn
+                                   {:op "eval" :session session
+                                    :code "(forever (ev/sleep 0.01))"})
+        result-chan (ev/chan 1)]
+    (ev/spawn (ev/give result-chan (client/await-result conn eval-id)))
+    (ev/sleep 0.2)
+    (client/interrupt conn session eval-id)
+    (let [eres (ev/take result-chan)]
+      (assert (status-has? eres "interrupted") "in-flight eval is interrupted")
+      (assert (status-has? eres "done") "interrupted eval still completes")))
+
+  # --- connection is healthy after the interrupt ------------------------------
+  (let [r (client/eval-code conn session "(+ 40 2)")]
+    (assert (= "42" (string (get r :value))) "connection usable after interrupt"))
+
+  (client/close-mux conn))
+
+(end-suite)

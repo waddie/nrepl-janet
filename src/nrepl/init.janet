@@ -27,9 +27,26 @@
 (def default-host server/default-host)
 (def default-port server/default-port)
 
-# Client API (mainly for tests / quick poking)
+# Serial client API (mainly for tests / quick poking)
 (def connect client/connect)
 (def request client/request)
+
+# Multiplexing client API (for building real tools: id-routed responses,
+# merged results, interrupt-while-eval). See `client.janet`.
+(def connect-mux client/connect-mux)
+(def call client/call)
+(def send-async client/send-async)
+(def await-result client/await-result)
+(def clone-session client/clone-session)
+(def eval-code client/eval-code)
+(def load-file-code client/load-file-code)
+(def lookup client/lookup)
+(def completions client/completions)
+(def describe client/describe)
+(def ls-sessions client/ls-sessions)
+(def interrupt client/interrupt)
+(def close-mux client/close-mux)
+(def find-nrepl-port client/find-nrepl-port)
 
 # Codec (exposed for tooling and tests)
 (def encode bencode/encode)

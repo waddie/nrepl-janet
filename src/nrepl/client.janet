@@ -127,16 +127,29 @@
 (defn send-async
   "Tag `msg` with a fresh `:id` (unless it already has one), register a channel
   for its responses, write it, and return the id. Pair with `await-result`.
-  The socket write is serialised through the connection's write lock."
+  The socket write is serialised through the connection's write lock.
+  Errors with \"connection closed\" if the reader has already seen EOF: with no
+  reader, nothing would ever give to (or close) the registered channel, so a
+  blocked `await-result` would hang forever."
   [conn msg]
-  # next-id and `put` don't yield, so they're atomic against other fibers; only
-  # the network write needs the lock.
+  # Race-free without locking: neither this check-then-put nor the reader's
+  # defer (set :closed, close all pending channels) has a yield point, so
+  # either we error here, or our channel is in :pending when the defer runs
+  # and gets closed -- the mid-request path `await-result` already handles.
+  (when (in conn :closed)
+    (error "connection closed"))
   (def id (or (get msg :id) (next-id conn)))
   (put (in conn :pending) id (ev/chan 64))
   (def wlock (in conn :wlock))
   (ev/take wlock)
   (defer (ev/give wlock :token)
-    (net/write (in conn :stream) (bencode/encode (merge {} msg {:id id}))))
+    (try
+      (net/write (in conn :stream) (bencode/encode (merge {} msg {:id id})))
+      ([err]
+        # The caller never learns `id`, so nobody will collect (and deregister)
+        # the channel; drop it here rather than leak the :pending entry.
+        (put (in conn :pending) id nil)
+        (error err))))
   id)
 
 (defn- status-done?

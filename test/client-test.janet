@@ -66,4 +66,28 @@
 
   (client/close-mux conn))
 
+# --- send-async on a closed connection errors instead of hanging --------------
+# Regression: once the reader fiber has seen EOF nothing services :pending, so
+# without the :closed guard a call would block in await-result forever. Uses a
+# raw listener because closing a real server's listener does not close already
+# accepted connection streams; here we hold the server-side stream and drop it.
+(with [listener (net/listen host "17900")]
+  (var server-side nil)
+  (ev/spawn (set server-side (net/accept listener)))
+  (def dead (client/connect-mux host "17900"))
+  (var guard 0)
+  (while (and (nil? server-side) (< guard 100)) (ev/sleep 0.01) (++ guard))
+  (assert server-side "test listener accepted the connection")
+  (:close server-side) # peer drops
+  (set guard 0)
+  (while (and (not (get dead :closed)) (< guard 100)) (ev/sleep 0.05) (++ guard))
+  (assert (get dead :closed) "reader marks the connection closed on peer EOF")
+  # Deadline so a regression fails the suite as "deadline expired" instead of
+  # hanging it.
+  (def [ok err] (protect (ev/with-deadline 2 (client/call dead {:op "describe"}))))
+  (assert (not ok) "call on a closed connection errors")
+  (assert (string/find "connection closed" (string err))
+          "the error is connection closed, not a hang or a write failure")
+  (client/close-mux dead))
+
 (end-suite)

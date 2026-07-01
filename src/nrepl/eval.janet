@@ -173,7 +173,9 @@
         :tp)
       nil
       super))
-  (put session :current-eval {:fiber runner :marker marker})
+  # :id lets `interrupt` check a supplied :interrupt-id against the request
+  # actually running (interrupt-id-mismatch otherwise).
+  (put session :current-eval {:fiber runner :marker marker :id id})
   (ev/take super) # wait for run-context to finish (normally, error, or interrupt)
   (put session :current-eval nil)
   (flush-out)

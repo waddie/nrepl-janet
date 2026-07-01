@@ -20,7 +20,7 @@
 
 (def server-version
   "Version reported under `versions` in `describe`."
-  "0.3.1")
+  "0.3.2")
 
 (def supported-ops
   "Ops advertised by `describe`. Clients query this on connect, so partial
@@ -122,14 +122,18 @@
                    :sessions (keys (in ctx :sessions))
                    :status ["done"]}))
 
+# eval/load-file jobs carry :id and :send alongside the thunk so
+# `close-session` can answer jobs still queued when the session closes.
 (defn- op-eval
   [msg ctx]
   (if-let [s (session-for ctx msg)]
     (ev/give (in s :in)
-             (fn eval-job []
-               (evl/evaluate s (string (get msg :code "")) (in ctx :send) (get msg :id)
-                             (when (get msg :file) (string (get msg :file)))
-                             (get msg :line) (get msg :column))))
+             {:id (get msg :id)
+              :send (in ctx :send)
+              :run (fn eval-job []
+                     (evl/evaluate s (string (get msg :code "")) (in ctx :send) (get msg :id)
+                                   (when (get msg :file) (string (get msg :file)))
+                                   (get msg :line) (get msg :column)))})
     (unknown-session ctx msg)))
 
 (defn- op-load-file
@@ -137,20 +141,34 @@
   [msg ctx]
   (if-let [s (session-for ctx msg)]
     (ev/give (in s :in)
-             (fn load-file-job []
-               (evl/evaluate s (string (get msg :file "")) (in ctx :send) (get msg :id)
-                             (when (get msg :file-name) (string (get msg :file-name))))))
+             {:id (get msg :id)
+              :send (in ctx :send)
+              :run (fn load-file-job []
+                     (evl/evaluate s (string (get msg :file "")) (in ctx :send) (get msg :id)
+                                   (when (get msg :file-name) (string (get msg :file-name)))))})
     (unknown-session ctx msg)))
 
 (defn- op-interrupt
-  "Cancel the session's currently running eval, if any."
+  "Cancel the session's currently running eval, using the nREPL spec's status
+  vocabulary: `session-idle` when nothing is running, `interrupt-id-mismatch`
+  when a supplied `:interrupt-id` names a different request than the one
+  running, `interrupted` when the cancel was delivered (cooperatively -- see
+  eval.janet)."
   [msg ctx]
-  (when-let [s (session-for ctx msg)
-             ce (in s :current-eval)]
-    (protect (ev/cancel (in ce :fiber) (in ce :marker))))
-  ((in ctx :send) {:id (get msg :id)
-                   :session (get msg :session)
-                   :status ["done"]}))
+  (defn reply [status]
+    ((in ctx :send) {:id (get msg :id)
+                     :session (get msg :session)
+                     :status [status "done"]}))
+  (if-let [s (session-for ctx msg)]
+    (do
+      (def ce (in s :current-eval))
+      (def want (when-let [iid (get msg :interrupt-id)] (string iid)))
+      (cond
+        (nil? ce) (reply "session-idle")
+        (and want (not= want (string (get ce :id)))) (reply "interrupt-id-mismatch")
+        (do (protect (ev/cancel (in ce :fiber) (in ce :marker)))
+          (reply "interrupted"))))
+    (unknown-session ctx msg)))
 
 (defn- op-stdin
   "Deliver client-supplied input to the session's running eval (via its `:stdin`

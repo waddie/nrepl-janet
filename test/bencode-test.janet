@@ -99,4 +99,16 @@
 (assert-error "invalid leading byte" (b/decode "x"))
 (assert-error "non-integer i...e" (b/decode "i4.5e"))
 
+# Only canonical integers: scan-number's Janet-literal leniencies (hex,
+# underscores, explicit plus) and the spec-forbidden forms (leading zero,
+# negative zero) must all be rejected.
+(assert-error "hex integer rejected" (b/decode "i0x10e"))
+(assert-error "underscored integer rejected" (b/decode "i1_000e"))
+(assert-error "plus-signed integer rejected" (b/decode "i+5e"))
+(assert-error "leading-zero integer rejected" (b/decode "i03e"))
+(assert-error "negative zero rejected" (b/decode "i-0e"))
+(assert-error "empty integer rejected" (b/decode "ie"))
+(assert-error "bare minus rejected" (b/decode "i-e"))
+(assert-error "non-digit string length rejected" (b/decode "0x3:abc"))
+
 (end-suite)

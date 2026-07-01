@@ -102,25 +102,36 @@
 
 (var- decode-value nil)
 
+# Validate numeric bodies before scan-number sees them: scan-number accepts
+# Janet's own literal syntax (0x10, 1_000, +5), none of which is bencode.
+(def- canonical-int
+  "Canonical bencode integer body: 0, or an optional minus then a digit run
+  with no leading zero (the spec forbids i03e and i-0e)."
+  (peg/compile ~(* (+ "0" (* (? "-") (range "19") (any (range "09")))) -1)))
+
+(def- digit-run
+  "String-length body: one or more decimal digits."
+  (peg/compile ~(* (some (range "09")) -1)))
+
 (defn- decode-int
   [buf pos]
   (def e (find-byte buf (inc pos) (chr "e")))
   (if (nil? e)
     [:incomplete nil pos]
-    (let [s (string/slice buf (inc pos) e)
-          n (scan-number s)]
-      (when (or (nil? n) (not= n (math/floor n)))
+    (let [s (string/slice buf (inc pos) e)]
+      (unless (peg/match canonical-int s)
         (errorf "invalid bencode integer: %v" s))
-      [:ok n (inc e)])))
+      [:ok (scan-number s) (inc e)])))
 
 (defn- decode-string
   [buf pos]
   (def colon (find-byte buf pos (chr ":")))
   (if (nil? colon)
     [:incomplete nil pos]
-    (let [len (scan-number (string/slice buf pos colon))]
-      (when (or (nil? len) (neg? len) (not= len (math/floor len)))
+    (let [ls (string/slice buf pos colon)]
+      (unless (peg/match digit-run ls)
         (errorf "invalid bencode string length at %d" pos))
+      (def len (scan-number ls))
       (def start (inc colon))
       (def end (+ start len))
       (if (> end (length buf))

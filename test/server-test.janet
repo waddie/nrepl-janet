@@ -125,15 +125,17 @@
                         :code "(forever (ev/sleep 0.01))"})
     (ev/sleep 0.2)
     (client/send-msg c {:op "interrupt" :id "i2" :session session})
-    # Drain both the interrupt ack and the eval's interrupted/done responses.
+    # Drain both the interrupt ack (which itself carries `interrupted`) and the
+    # eval's own interrupted/done response; key on the eval's id so nothing of
+    # this request is left in the pipe.
     (var saw-interrupted false)
     (var seen 0)
     (while (< seen 8)
       (def m (client/recv-msg c))
       (if (nil? m) (break))
       (++ seen)
-      (when (and (get m :status)
-                 (some (fn [s] (= "interrupted" (string s))) (get m :status)))
+      (when (and (= "i1" (string (get m :id "")))
+                 (find-status [m] "interrupted"))
         (set saw-interrupted true)
         (break)))
     (assert saw-interrupted "interrupt of infinite loop yields interrupted"))
@@ -247,14 +249,15 @@
                          :code "(forever (ev/sleep 0.01))"})
     (ev/sleep 0.1)
     (client/send-msg c2 {:op "interrupt" :id "pi2" :session persist})
+    # Key on the eval's id: the interrupt ack also carries `interrupted` now.
     (var saw-interrupted false)
     (var seen 0)
     (while (< seen 8)
       (def m (client/recv-msg c2))
       (if (nil? m) (break))
       (++ seen)
-      (when (and (get m :status)
-                 (some (fn [s] (= "interrupted" (string s))) (get m :status)))
+      (when (and (= "pi1" (string (get m :id "")))
+                 (find-status [m] "interrupted"))
         (set saw-interrupted true)
         (break)))
     (assert saw-interrupted "a reconnected client can interrupt the session's eval")
@@ -267,6 +270,68 @@
       (assert (find-status msgs "unknown-session")
               "closed session is gone; eval reports unknown-session"))
     (client/close c2))
+
+  # --- interrupt status vocabulary ---------------------------------------------
+  (let [msgs (client/request c {:op "interrupt" :id "ic1" :session session})]
+    (assert (find-status msgs "session-idle")
+            "interrupt with nothing running reports session-idle"))
+
+  (let [msgs (client/request c {:op "interrupt" :id "ic2" :session "no-such-session"})]
+    (assert (find-status msgs "unknown-session")
+            "interrupt of an unknown session reports unknown-session"))
+
+  # An interrupt naming a different request than the one running is rejected
+  # and the eval keeps going; a matching interrupt-id cancels it.
+  (do
+    (client/send-msg c {:op "eval" :id "ic3" :session session
+                        :code "(forever (ev/sleep 0.01))"})
+    (ev/sleep 0.2)
+    (client/send-msg c {:op "interrupt" :id "ic4" :session session
+                        :interrupt-id "not-ic3"})
+    (def ack (client/recv-msg c))
+    (assert (= "ic4" (string (get ack :id))) "mismatch ack answers the interrupt request")
+    (assert (find-status [ack] "interrupt-id-mismatch")
+            "a non-matching interrupt-id reports interrupt-id-mismatch")
+    (client/send-msg c {:op "interrupt" :id "ic5" :session session
+                        :interrupt-id "ic3"})
+    (var eval-interrupted false)
+    (var guard 0)
+    (while (< guard 8)
+      (def m (client/recv-msg c))
+      (if (nil? m) (break))
+      (++ guard)
+      (when (and (= "ic3" (string (get m :id "")))
+                 (find-status [m] "interrupted"))
+        (set eval-interrupted true)
+        (break)))
+    (assert eval-interrupted "a matching interrupt-id interrupts the eval"))
+
+  # --- close answers jobs still queued behind a running eval --------------------
+  # A closed queue drops its buffered values, so close must drain queued jobs
+  # and reply session-closed, or those requests never complete.
+  (do
+    (def qs
+      (string (get (find-status (client/request c {:op "clone" :id "qc1"}) "done")
+                   :new-session)))
+    (client/send-msg c {:op "eval" :id "q1" :session qs
+                        :code "(forever (ev/sleep 0.01))"})
+    (ev/sleep 0.2) # let the worker pick q1 up so q2 queues behind it
+    (client/send-msg c {:op "eval" :id "q2" :session qs :code ":never-runs"})
+    (ev/sleep 0.1)
+    (client/send-msg c {:op "close" :id "qx" :session qs})
+    (var q2-closed false)
+    (var q1-interrupted false)
+    (var guard 0)
+    (while (and (< guard 12) (not (and q2-closed q1-interrupted)))
+      (def m (client/recv-msg c))
+      (if (nil? m) (break))
+      (++ guard)
+      (when (and (= "q2" (string (get m :id ""))) (find-status [m] "session-closed"))
+        (set q2-closed true))
+      (when (and (= "q1" (string (get m :id ""))) (find-status [m] "interrupted"))
+        (set q1-interrupted true)))
+    (assert q2-closed "a queued job is answered with session-closed on close")
+    (assert q1-interrupted "the running eval is interrupted by close"))
 
   # --- close tears the session down -------------------------------------------
   (let [msgs (client/request c {:op "close" :id "x1" :session session})]

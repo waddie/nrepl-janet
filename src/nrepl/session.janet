@@ -12,7 +12,10 @@
 ### Shape:
 ###   {:id <hex string>            opaque session id sent to the client
 ###    :env <make-env result>      persistent compilation/runtime environment
-###    :in <ev/chan of thunks>     job queue drained serially by the worker
+###    :in <ev/chan of jobs>       job queue drained serially by the worker;
+###                                each job is {:id <request id> :send <fn>
+###                                :run <thunk>} so `close-session` can answer
+###                                jobs still queued when the session closes
 ###    :stdin <ev/chan of strings> input delivered by `stdin` ops, read by evals
 ###    :current-eval <handle|nil>  {:fiber f :marker m} of a running eval, for interrupt
 ###    :ns <string>                reported namespace ("user" by default)
@@ -57,23 +60,33 @@
   The worker is fire-and-forget (`ev/spawn`, root supervisor) rather than a
   connection nursery fiber: sessions are server-scoped and must outlive the
   connection that created them. On exit the root scheduler reaps the fiber, so a
-  closed session's captured env is released. Each `(job)` is guarded so a bug
-  escaping an eval-job cannot crash the worker (which would strand the queue)."
+  closed session's captured env is released. Each job's thunk is guarded so a
+  bug escaping an eval-job cannot crash the worker (which would strand the
+  queue)."
   [session]
   (ev/spawn
     (forever
       (def job (ev/take (in session :in)))
       (if (nil? job) (break))
-      (try (job)
+      (try ((in job :run))
         ([err f] (debug/stacktrace f err "session worker "))))))
 
 (defn close-session
-  "Cancel any running eval, close the worker queue (so the worker exits) and
-  remove the session from `sessions`."
+  "Cancel any running eval, answer any jobs still queued behind it, close the
+  worker queue (so the worker exits) and remove the session from `sessions`."
   [sessions session]
   (when-let [ce (in session :current-eval)]
     (protect (ev/cancel (in ce :fiber) (in ce :marker))))
-  (ev/chan-close (in session :in))
+  # Closing a channel drops its buffered values, so drain queued jobs first
+  # and give each a terminal reply -- an unanswered request would leave its
+  # client waiting on a `done` that never comes.
+  (def q (in session :in))
+  (while (pos? (ev/count q))
+    (when-let [job (ev/take q)]
+      ((in job :send) {:id (in job :id)
+                       :session (in session :id)
+                       :status ["error" "session-closed" "done"]})))
+  (ev/chan-close q)
   (ev/chan-close (in session :stdin)) # unblock any eval waiting on input (EOF)
   (put sessions (in session :id) nil))
 

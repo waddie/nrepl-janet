@@ -102,8 +102,10 @@
                        (if (nil? msg) (break))
                        (ops/dispatch msg ctx)))))
 
-  (join-nursery nurse)
-  (protect (:close stream)))
+  # defer, not sequence: join-nursery re-raises a reader error (e.g. malformed
+  # bencode from the client), and the socket must still be closed on that path.
+  (defer (protect (:close stream))
+    (join-nursery nurse)))
 
 (defn server
   "Start an nREPL server bound to `host`:`port` and return the listening

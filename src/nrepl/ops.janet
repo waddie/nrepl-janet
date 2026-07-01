@@ -5,9 +5,11 @@
 ###
 ### Each handler takes the decoded request `msg` (a table with keyword keys and
 ### string/int/list values) and a connection context `ctx`:
-###   {:sessions <table id->session>   per-connection session registry
-###    :send <fn resp>                 enqueue a response dict for the writer
-###    :nurse <nursery>}               connection nursery (for session workers)
+###   {:sessions <table id->session>   server-wide session registry (shared
+###                                    across connections; sessions outlive the
+###                                    connection that created them)
+###    :send <fn resp>}                enqueue a response dict for *this*
+###                                    connection's writer
 ###
 ### Quick control ops reply directly. `eval`/`load-file` are enqueued onto the
 ### target session's serial worker so they run one-at-a-time per session while
@@ -88,7 +90,7 @@
   (def sessions (in ctx :sessions))
   (def parent (when-let [s (session-for ctx msg)] (in s :env)))
   (def s (session/new-session sessions parent))
-  (session/start-worker s (in ctx :nurse))
+  (session/start-worker s)
   ((in ctx :send) {:id (get msg :id)
                    :new-session (in s :id)
                    :status ["done"]}))
@@ -214,6 +216,10 @@
 (defn dispatch
   "Route a decoded request to its handler, or reply `unknown-op`."
   [msg ctx]
+  # Any op addressing a live session counts as activity, so the idle reaper
+  # leaves it alone. Long evals are also protected by their :current-eval.
+  (when-let [s (get (in ctx :sessions) (get msg :session))]
+    (session/touch s))
   (def op (when (get msg :op) (string (get msg :op))))
   (if-let [handler (get handlers op)]
     (handler msg ctx)

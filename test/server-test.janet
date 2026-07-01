@@ -218,9 +218,96 @@
           info (get (find-status lk "done") :info)]
       (assert (get info :doc) "the completion candidate resolves to a docstring via lookup")))
 
+  # --- session state survives disconnect + reconnect --------------------------
+  # Sessions are server-scoped: dropping the connection must not lose their env.
+  # Uses its own connections so closing one doesn't disturb the shared `c`.
+  (do
+    (def c1 (client/connect host port))
+    (def persist
+      (string (get (find-status (client/request c1 {:op "clone" :id "pc1"}) "done")
+                   :new-session)))
+    (client/request c1 {:op "eval" :id "pe1" :session persist :code "(def survivor 41)"})
+    (client/close c1) # drop the whole connection
+
+    (def c2 (client/connect host port))
+    (let [msgs (client/request c2 {:op "eval" :id "pe2" :session persist
+                                   :code "(+ survivor 1)"})]
+      (assert (= "42" (value-of msgs))
+              "a def set before disconnect is visible after reconnect"))
+
+    # ls-sessions on the fresh connection still lists the persisted session.
+    (let [msgs (client/request c2 {:op "ls-sessions" :id "pl1"})
+          ids (map string (get (find-status msgs "done") :sessions))]
+      (assert (some (fn [s] (= persist s)) ids)
+              "ls-sessions is server-wide and lists the reconnected session"))
+
+    # An interrupt from the new connection cleans up a yielding eval, and the
+    # session stays reusable afterwards.
+    (client/send-msg c2 {:op "eval" :id "pi1" :session persist
+                         :code "(forever (ev/sleep 0.01))"})
+    (ev/sleep 0.1)
+    (client/send-msg c2 {:op "interrupt" :id "pi2" :session persist})
+    (var saw-interrupted false)
+    (var seen 0)
+    (while (< seen 8)
+      (def m (client/recv-msg c2))
+      (if (nil? m) (break))
+      (++ seen)
+      (when (and (get m :status)
+                 (some (fn [s] (= "interrupted" (string s))) (get m :status)))
+        (set saw-interrupted true)
+        (break)))
+    (assert saw-interrupted "a reconnected client can interrupt the session's eval")
+    (let [msgs (client/request c2 {:op "eval" :id "pe3" :session persist :code "survivor"})]
+      (assert (= "41" (value-of msgs)) "session is reusable after a cross-connection interrupt"))
+
+    # Explicit close still removes it; a later eval reports unknown-session.
+    (client/request c2 {:op "close" :id "px1" :session persist})
+    (let [msgs (client/request c2 {:op "eval" :id "pe4" :session persist :code "survivor"})]
+      (assert (find-status msgs "unknown-session")
+              "closed session is gone; eval reports unknown-session"))
+    (client/close c2))
+
   # --- close tears the session down -------------------------------------------
   (let [msgs (client/request c {:op "close" :id "x1" :session session})]
     (assert (find-status msgs "done") "close completes with done"))
+
+  (client/close c))
+
+# --- opt-in idle reaper ------------------------------------------------------
+# A separate short-lived server so the tiny idle timeout can't affect the suite
+# above. Idle sessions are reaped; a session with a running eval is not.
+(with [listener (server/server host "17889" {:idle-timeout 0.2})]
+  (def c (client/connect host "17889"))
+
+  (def idle
+    (string (get (find-status (client/request c {:op "clone" :id "rc1"}) "done")
+                 :new-session)))
+  (ev/sleep 0.5) # exceed the idle timeout with no activity
+  (let [msgs (client/request c {:op "eval" :id "re1" :session idle :code "1"})]
+    (assert (find-status msgs "unknown-session") "an idle session is reaped"))
+
+  # A session with a running (yielding) eval is not idle, so it survives past
+  # the timeout. Check while the eval is still in flight: ls-sessions must still
+  # list it even though it has had no op activity for longer than the timeout.
+  (def busy
+    (string (get (find-status (client/request c {:op "clone" :id "rc2"}) "done")
+                 :new-session)))
+  (client/send-msg c {:op "eval" :id "re2" :session busy
+                      :code "(ev/sleep 0.6) :done"})
+  (ev/sleep 0.4) # exceeds the 0.2 idle timeout, but the eval is still running
+  (let [msgs (client/request c {:op "ls-sessions" :id "rl1"})
+        ids (map string (get (find-status msgs "done") :sessions))]
+    (assert (some (fn [s] (= busy s)) ids)
+            "a session with a running eval is not reaped"))
+  # Tidy up: interrupt the eval and drain its responses.
+  (client/send-msg c {:op "interrupt" :id "re3" :session busy})
+  (var guard 0)
+  (while (< guard 8)
+    (def m (client/recv-msg c))
+    (if (nil? m) (break))
+    (++ guard)
+    (when (and (= "re2" (string (get m :id ""))) (find-status [m] "done")) (break)))
 
   (client/close c))
 

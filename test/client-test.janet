@@ -64,6 +64,47 @@
   (let [r (client/eval-code conn session "(+ 40 2)")]
     (assert (= "42" (string (get r :value))) "connection usable after interrupt"))
 
+  # --- stdin answers an in-flight eval blocked on need-input -------------------
+  # Same shape as the interrupt test: the eval's collector runs on another
+  # fiber; this fiber watches for the need-input flag and delivers input.
+  (let [eval-id (client/send-async conn
+                                   {:op "eval" :session session
+                                    :code "(string \"got \" (getline))"})
+        result-chan (ev/chan 1)]
+    (ev/spawn (ev/give result-chan (client/await-result conn eval-id)))
+    (var guard 0)
+    (while (and (nil? (get conn :need-input)) (< guard 100))
+      (ev/sleep 0.01) (++ guard))
+    (assert (= eval-id (get conn :need-input))
+            "need-input flags the blocked eval's id on the connection")
+    (let [r (client/send-stdin conn session "hi\n")]
+      (assert (status-has? r "done") "stdin op acknowledged with done"))
+    (assert (nil? (get conn :need-input)) "send-stdin clears the flag")
+    (let [eres (ev/take result-chan)]
+      (assert (status-has? eres "need-input") "eval status records need-input")
+      (assert (= "\"got hi\\n\"" (string (get eres :value)))
+              "eval resumes with the delivered line")))
+
+  # --- input buffered ahead of demand is consumed without need-input -----------
+  (client/send-stdin conn session "early\n")
+  (let [r (client/eval-code conn session "(getline)")]
+    (assert (= "@\"early\\n\"" (string (get r :value))) "pre-supplied input is read")
+    (assert (not (status-has? r "need-input")) "no need-input when input waits"))
+
+  # --- empty stdin signals end-of-input ----------------------------------------
+  (let [eval-id (client/send-async conn
+                                   {:op "eval" :session session
+                                    :code "(getline)"})
+        result-chan (ev/chan 1)]
+    (ev/spawn (ev/give result-chan (client/await-result conn eval-id)))
+    (var guard 0)
+    (while (and (nil? (get conn :need-input)) (< guard 100))
+      (ev/sleep 0.01) (++ guard))
+    (client/send-stdin conn session "")
+    (let [eres (ev/take result-chan)]
+      (assert (status-has? eres "done") "EOF'd eval completes")
+      (assert (= "@\"\"" (string (get eres :value))) "getline returns empty at EOF")))
+
   (client/close-mux conn))
 
 # --- send-async on a closed connection errors instead of hanging --------------

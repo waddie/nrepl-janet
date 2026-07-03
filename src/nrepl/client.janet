@@ -100,6 +100,13 @@
           (def msg (bencode/take-message dec))
           (if (nil? msg) (break))
           (def id (get msg :id))
+          # Advisory flag: a `need-input` status means the request is blocked
+          # waiting for a `stdin` op (see `send-stdin`). Single slot suffices --
+          # one eval runs per session at a time. Cleared by `send-stdin` and by
+          # `await-result` when the flagged request completes.
+          (when-let [st (and id (get msg :status))]
+            (when (some (fn [s] (= "need-input" (string s))) st)
+              (set (conn :need-input) id)))
           (def ch (and id (get pending id)))
           # Tolerate a race where the collector has already torn down `id`.
           (when ch (try (ev/give ch msg) ([_] nil))))))))
@@ -116,6 +123,8 @@
               :pending @{}
               :seq 0
               :closed false
+              # Id of a request currently blocked on `need-input`, or nil.
+              :need-input nil
               # Capacity-1 channel used as a write lock so two fibers (e.g. an
               # eval and a concurrent interrupt) can't interleave bytes mid-frame
               # on the shared socket. Seeded with one token = unlocked.
@@ -193,6 +202,10 @@
     (merge-msg acc msg)
     (when (status-done? msg) (break)))
   (put (in conn :pending) id nil)
+  # A request that ends still flagged (interrupted, EOF'd, or errored while
+  # awaiting input) must not leave `:need-input` pointing at a dead id.
+  (when (= id (in conn :need-input))
+    (set (conn :need-input) nil))
   (protect (ev/chan-close ch))
   (finalize acc))
 
@@ -244,6 +257,17 @@
   different fiber while `eval-code` is still in flight."
   [conn session interrupt-id]
   (call conn {:op "interrupt" :session session :interrupt-id interrupt-id}))
+
+(defn send-stdin
+  "Deliver `input` to `session` via a `stdin` op. An empty `input` signals
+  end-of-input. Like `interrupt`, safe to call from a different fiber while an
+  `eval-code` blocked on `need-input` is still in flight; servers also buffer
+  input sent ahead of demand, so this may precede the eval that reads it."
+  [conn session input]
+  # Clear before sending: once input is on the wire the blocked eval is no
+  # longer awaiting it (it may re-flag if it asks again).
+  (set (conn :need-input) nil)
+  (call conn {:op "stdin" :session session :stdin input}))
 
 (defn close-mux
   "Close the multiplexing connection. The reader fiber unblocks pending callers."

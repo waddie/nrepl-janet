@@ -64,6 +64,12 @@
   (let [r (client/eval-code conn session "(+ 40 2)")]
     (assert (= "42" (string (get r :value))) "connection usable after interrupt"))
 
+  # --- session-exists? consults ls-sessions ------------------------------------
+  (assert (= true (client/session-exists? conn session))
+          "session-exists? finds a cloned session")
+  (assert (= false (client/session-exists? conn "bogus"))
+          "session-exists? rejects an unlisted id")
+
   # --- stdin answers an in-flight eval blocked on need-input -------------------
   # Same shape as the interrupt test: the eval's collector runs on another
   # fiber; this fiber watches for the need-input flag and delivers input.

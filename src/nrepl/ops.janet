@@ -20,7 +20,7 @@
 
 (def server-version
   "Version reported under `versions` in `describe`."
-  "0.4.0")
+  "0.4.1")
 
 (def supported-ops
   "Ops advertised by `describe`. Clients query this on connect, so partial

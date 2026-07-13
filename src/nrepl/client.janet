@@ -252,6 +252,16 @@
   [conn]
   (call conn {:op "ls-sessions"}))
 
+(defn session-exists?
+  "Whether the server lists session `id`. Returns true or false from the
+  server's `ls-sessions`, or nil when the server does not support the op
+  (status carries \"unknown-op\"), leaving the caller to decide."
+  [conn id]
+  (def r (ls-sessions conn))
+  (if (some (fn [s] (= "unknown-op" s)) (get r :status []))
+    nil
+    (truthy? (some (fn [s] (= (string id) (string s))) (get r :sessions [])))))
+
 (defn interrupt
   "Interrupt the running eval `interrupt-id` in `session`. Safe to call from a
   different fiber while `eval-code` is still in flight."

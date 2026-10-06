@@ -27,6 +27,11 @@
   [msgs]
   (string/join (map (fn [m] (string (get m :out ""))) msgs)))
 
+(defn- err-of
+  "Concatenated `:err` strings across `msgs`."
+  [msgs]
+  (string/join (map (fn [m] (string (get m :err ""))) msgs)))
+
 (with [listener (server/server host port)]
   (def c (client/connect host port))
 
@@ -54,6 +59,53 @@
   (let [msgs (client/request c {:op "eval" :id "e2" :session session :code "(print \"hi\")"})]
     (assert (string/has-prefix? "hi" (out-of msgs)) "print produces out 'hi'")
     (assert (find-status msgs "done") "print eval completes"))
+
+  # --- stderr arrives as err, separate from out -------------------------------
+  (let [msgs (client/request c {:op "eval" :id "se1" :session session :code "(eprin \"e\")"})]
+    (assert (= "e" (err-of msgs)) "eprin produces err 'e'")
+    (assert (= "" (out-of msgs)) "eprin produces no out"))
+
+  (let [msgs (client/request c {:op "eval" :id "se2" :session session
+                                :code "(do (prin \"o\") (eprin \"e\"))"})]
+    (assert (= "o" (out-of msgs)) "prin output stays in out")
+    (assert (= "e" (err-of msgs)) "eprin output goes to err"))
+
+  # --- eval and load-file without code report no-code/no-file -----------------
+  (let [msgs (client/request c {:op "eval" :id "nc1" :session session})]
+    (assert (find-status msgs "no-code") "eval without code reports no-code")
+    (assert (find-status msgs "done") "no-code reply completes with done"))
+
+  (let [msgs (client/request c {:op "eval" :id "nc2"})]
+    (assert (find-status msgs "no-code")
+            "eval with neither session nor code reports no-code"))
+
+  (let [msgs (client/request c {:op "load-file" :id "nf1" :session session})]
+    (assert (find-status msgs "no-file") "load-file without file reports no-file"))
+
+  # --- eval without a session runs in a throwaway session ----------------------
+  # Calva's connect handshake sends an eval with no session.
+  (let [before (length (get (find-status (client/request c {:op "ls-sessions" :id "eb"}) "done")
+                            :sessions))
+        msgs (client/request c {:op "eval" :id "ep1" :code "(+ 1 2)"})
+        after (length (get (find-status (client/request c {:op "ls-sessions" :id "ea"}) "done")
+                           :sessions))]
+    (assert (= "3" (value-of msgs)) "sessionless eval => value 3")
+    (assert (find-status msgs "done") "sessionless eval completes with done")
+    (assert (all (fn [m] (nil? (get m :session))) msgs)
+            "sessionless eval replies carry no session")
+    (assert (= before after) "sessionless eval leaves no session behind"))
+
+  (client/request c {:op "eval" :id "ep2" :code "(def ephemeral-def 1)"})
+  (let [msgs (client/request c {:op "eval" :id "ep3" :code "ephemeral-def"})]
+    (assert (find-status msgs "eval-error")
+            "definitions don't carry over between sessionless evals"))
+
+  (let [msgs (client/request c {:op "load-file" :id "ep4" :file "(+ 2 2)"})]
+    (assert (= "4" (value-of msgs)) "sessionless load-file => value 4"))
+
+  (let [msgs (client/request c {:op "eval" :id "ep5" :session "no-such-session" :code "1"})]
+    (assert (find-status msgs "unknown-session")
+            "eval naming an unknown session still reports unknown-session"))
 
   # --- a deliberate error yields eval-error -----------------------------------
   (let [msgs (client/request c {:op "eval" :id "e3" :session session :code "(error \"boom\")"})]
@@ -117,7 +169,9 @@
 
   # --- unknown op -------------------------------------------------------------
   (let [msgs (client/request c {:op "no-such-op" :id "u1"})]
-    (assert (find-status msgs "unknown-op") "unknown op reports unknown-op"))
+    (assert (find-status msgs "unknown-op") "unknown op reports unknown-op")
+    (assert (= "no-such-op" (string (get (find-status msgs "unknown-op") :op)))
+            "unknown-op reply echoes the op"))
 
   # --- interrupt of a (yielding) infinite loop --------------------------------
   (do
@@ -335,7 +389,16 @@
 
   # --- close tears the session down -------------------------------------------
   (let [msgs (client/request c {:op "close" :id "x1" :session session})]
+    (assert (find-status msgs "session-closed") "close reports session-closed")
     (assert (find-status msgs "done") "close completes with done"))
+
+  (let [msgs (client/request c {:op "close" :id "x2" :session session})]
+    (assert (find-status msgs "unknown-session")
+            "closing an already closed session reports unknown-session"))
+
+  (let [msgs (client/request c {:op "close" :id "x3"})]
+    (assert (find-status msgs "unknown-session")
+            "close without a session reports unknown-session"))
 
   (client/close c))
 

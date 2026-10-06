@@ -19,8 +19,10 @@
 ###    :stdin <ev/chan of strings> input delivered by `stdin` ops, read by evals
 ###    :current-eval <handle|nil>  {:fiber f :marker m} of a running eval, for interrupt
 ###    :ns <string>                reported namespace ("user" by default)
-###    :last-active <number>}      monotonic timestamp of last activity, for the
+###    :last-active <number>       monotonic timestamp of last activity, for the
 ###                                optional idle reaper
+###    :ephemeral <bool>}          true for a throwaway session serving a single
+###                                request that named no session
 ###
 ### Sessions are server-scoped: they outlive the connection that created them, so
 ### a client can disconnect and reconnect (with the same session id) without
@@ -45,6 +47,16 @@
                  :current-eval nil :ns "user"
                  :last-active (os/clock :monotonic)})
   (put sessions id session)
+  session)
+
+(defn new-ephemeral-session
+  "Create a throwaway session for a request that names no session. It isn't
+  registered anywhere, so `ls-sessions` and the idle reaper never see it, and
+  replies from it carry no session id. The caller closes it once its one job
+  is done."
+  []
+  (def session (new-session @{}))
+  (put session :ephemeral true)
   session)
 
 (defn touch

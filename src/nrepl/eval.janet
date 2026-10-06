@@ -5,10 +5,10 @@
 ###
 ### Each `eval`/`load-file` request runs `run-context` over the request's `code`
 ### so multi-form payloads evaluate form-by-form with correct source maps and
-### line numbers. stdout/stderr produced during evaluation are captured into a
-### buffer (bound inside the evaluator, the way spork/netrepl does it) and
-### streamed back as `out` messages; each top-level form's value is sent as a
-### `value` message; the request ends with a `status ["done"]`.
+### line numbers. stdout and stderr produced during evaluation are captured into
+### separate buffers (bound inside the evaluator, the way spork/netrepl does it)
+### and streamed back as `out` and `err` messages; each top-level form's value is
+### sent as a `value` message; the request ends with a `status ["done"]`.
 ###
 ### The user code runs inside a child fiber recorded as the session's
 ### :current-eval, so an `interrupt` op can `ev/cancel` it. The cancel is sent
@@ -40,8 +40,12 @@
   (default line 1)
   (default column 1)
   (def env (in session :env))
-  (def base {:id id :session (in session :id)})
+  # An ephemeral session's id means nothing to the client, so don't send it.
+  (def base (if (in session :ephemeral)
+              {:id id}
+              {:id id :session (in session :id)}))
   (def obuf @"")
+  (def ebuf @"")
   (def stdin-chan (in session :stdin))
   (def inbuf @"") # bytes delivered by `stdin` ops, not yet consumed
   (var eof false) # set once the client signals end-of-input
@@ -51,7 +55,10 @@
   (defn flush-out []
     (when (pos? (length obuf))
       (send (merge base {:out (string obuf)}))
-      (buffer/clear obuf)))
+      (buffer/clear obuf))
+    (when (pos? (length ebuf))
+      (send (merge base {:err (string ebuf)}))
+      (buffer/clear ebuf)))
 
   (defn pull-input
     "Block until the client delivers more stdin, appending it to `inbuf` and
@@ -110,7 +117,7 @@
   (def evaluator
     (fn nrepl-evaluator [thunk &]
       (setdyn :out obuf)
-      (setdyn :err obuf)
+      (setdyn :err ebuf)
       (def v (thunk))
       (flush-out)
       (send (merge base {:value (format-value v) :ns (in session :ns)}))

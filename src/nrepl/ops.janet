@@ -20,7 +20,7 @@
 
 (def server-version
   "Version reported under `versions` in `describe`."
-  "0.4.1")
+  "0.4.2")
 
 (def supported-ops
   "Ops advertised by `describe`. Clients query this on connect, so partial
@@ -78,11 +78,16 @@
   [ctx msg]
   (get (in ctx :sessions) (get msg :session)))
 
-(defn- unknown-session
-  [ctx msg]
+(defn- reply-error
+  "Answer `msg` with an error status carrying `token`."
+  [ctx msg token]
   ((in ctx :send) {:id (get msg :id)
                    :session (get msg :session)
-                   :status ["error" "unknown-session" "done"]}))
+                   :status ["error" token "done"]}))
+
+(defn- unknown-session
+  [ctx msg]
+  (reply-error ctx msg "unknown-session"))
 
 (defn- op-clone
   "Create a new session, optionally inheriting the env of an existing one."
@@ -98,11 +103,13 @@
 (defn- op-close
   "Close a session: cancel any running eval, stop its worker, drop it."
   [msg ctx]
-  (when-let [s (session-for ctx msg)]
-    (session/close-session (in ctx :sessions) s))
-  ((in ctx :send) {:id (get msg :id)
-                   :session (get msg :session)
-                   :status ["done"]}))
+  (if-let [s (session-for ctx msg)]
+    (do
+      (session/close-session (in ctx :sessions) s)
+      ((in ctx :send) {:id (get msg :id)
+                       :session (get msg :session)
+                       :status ["session-closed" "done"]}))
+    (unknown-session ctx msg)))
 
 (defn- op-describe
   "Advertise supported ops and version metadata."
@@ -124,29 +131,44 @@
 
 # eval/load-file jobs carry :id and :send alongside the thunk so
 # `close-session` can answer jobs still queued when the session closes.
+(defn- submit-job
+  "Queue `run` (called with the session) on the worker of the session `msg`
+  names. A request that names no session gets a throwaway one, closed once the
+  job is done: the reference nREPL does the same, and Calva's connect handshake
+  relies on it. A request naming a session that doesn't exist gets
+  unknown-session."
+  [msg ctx run]
+  (defn give [s thunk]
+    (ev/give (in s :in) {:id (get msg :id) :send (in ctx :send) :run thunk}))
+  (if (nil? (get msg :session))
+    (let [s (session/new-ephemeral-session)]
+      (session/start-worker s)
+      (give s (fn ephemeral-job []
+                (defer (session/close-session @{} s)
+                  (run s)))))
+    (if-let [s (session-for ctx msg)]
+      (give s (fn job [] (run s)))
+      (unknown-session ctx msg))))
+
 (defn- op-eval
   [msg ctx]
-  (if-let [s (session-for ctx msg)]
-    (ev/give (in s :in)
-             {:id (get msg :id)
-              :send (in ctx :send)
-              :run (fn eval-job []
-                     (evl/evaluate s (string (get msg :code "")) (in ctx :send) (get msg :id)
-                                   (when (get msg :file) (string (get msg :file)))
-                                   (get msg :line) (get msg :column)))})
-    (unknown-session ctx msg)))
+  (if (nil? (get msg :code))
+    (reply-error ctx msg "no-code")
+    (submit-job msg ctx
+                (fn eval-job [s]
+                  (evl/evaluate s (string (get msg :code)) (in ctx :send) (get msg :id)
+                                (when (get msg :file) (string (get msg :file)))
+                                (get msg :line) (get msg :column))))))
 
 (defn- op-load-file
   "Evaluate file contents (sent in `:file`), using `:file-name` as the source."
   [msg ctx]
-  (if-let [s (session-for ctx msg)]
-    (ev/give (in s :in)
-             {:id (get msg :id)
-              :send (in ctx :send)
-              :run (fn load-file-job []
-                     (evl/evaluate s (string (get msg :file "")) (in ctx :send) (get msg :id)
-                                   (when (get msg :file-name) (string (get msg :file-name)))))})
-    (unknown-session ctx msg)))
+  (if (nil? (get msg :file))
+    (reply-error ctx msg "no-file")
+    (submit-job msg ctx
+                (fn load-file-job [s]
+                  (evl/evaluate s (string (get msg :file)) (in ctx :send) (get msg :id)
+                                (when (get msg :file-name) (string (get msg :file-name))))))))
 
 (defn- op-interrupt
   "Cancel the session's currently running eval, using the nREPL spec's status
@@ -243,4 +265,5 @@
     (handler msg ctx)
     ((in ctx :send) {:id (get msg :id)
                      :session (get msg :session)
+                     :op (get msg :op)
                      :status ["error" "unknown-op" "done"]})))

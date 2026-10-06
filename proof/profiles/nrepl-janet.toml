@@ -1,0 +1,46 @@
+# proof profile for nrepl-janet. Runs the nrepl module installed on the Janet
+# syspath, so reinstall (jpm install) before checking a change.
+#
+#   proof run proof/profiles/nrepl-janet.toml
+name = "nrepl-janet"
+homepage = "https://github.com/waddie/nrepl-janet"
+
+# run-server prints nothing, so bind port 0 and report the port ourselves.
+[launch]
+command = ["janet", "-e", '(import nrepl) (def l (nrepl/server "127.0.0.1" "0")) (print "nREPL server started on port " (get (net/localname l) 1)) (flush)']
+port-pattern = 'nREPL server started on port (\d+)'
+
+[snippets.value]
+code = "(+ 1 2)"
+value = "3"
+
+[snippets.stdout]
+code = '(prin "proof")'
+out = "proof"
+
+[snippets.stderr]
+code = '(eprin "proof")'
+err = "proof"
+
+[snippets.throw]
+code = '(error "proof")'
+
+[snippets.define]
+code = "(def proof-answer 42)"
+use = "proof-answer"
+value = "42"
+
+# Each session has its own environment.
+[snippets.session-state]
+code = "(def proof-marker :proof-marker)"
+use = "proof-marker"
+value = ":proof-marker"
+
+[snippets.multiple]
+code = "1 2"
+values = ["1", "2"]
+
+[snippets.read-line]
+code = "(getline)"
+value = '@"proof\n"'
+eof = '@""'

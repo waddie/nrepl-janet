@@ -220,6 +220,12 @@
   [conn &opt parent]
   (call conn (if parent {:op "clone" :session parent} {:op "clone"})))
 
+(defn close-session
+  "Close `session`, cancelling any eval running in it. Sessions outlive the
+  connection that cloned them, so close each one before disconnecting."
+  [conn session]
+  (call conn {:op "close" :session session}))
+
 (defn eval-code
   "Evaluate `code` in `session`. `opts` may carry `:file`/`:line`/`:column`."
   [conn session code &opt opts]

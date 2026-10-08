@@ -70,6 +70,13 @@
   (assert (= false (client/session-exists? conn "bogus"))
           "session-exists? rejects an unlisted id")
 
+  # --- close-session tears a session down --------------------------------------
+  (let [doomed (string (get (client/clone-session conn) :new-session))
+        r (client/close-session conn doomed)]
+    (assert (status-has? r "session-closed") "close replies with session-closed")
+    (assert (= false (client/session-exists? conn doomed))
+            "a closed session is no longer listed"))
+
   # --- stdin answers an in-flight eval blocked on need-input -------------------
   # Same shape as the interrupt test: the eval's collector runs on another
   # fiber; this fiber watches for the need-input flag and delivers input.

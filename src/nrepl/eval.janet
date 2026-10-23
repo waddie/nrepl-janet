@@ -52,13 +52,14 @@
   (def marker @{}) # unique identity used to recognise our own interrupt cancel
   (var interrupted false)
 
+  (defn send-buffered [buf key]
+    (when (pos? (length buf))
+      (send (merge base {key (string buf)}))
+      (buffer/clear buf)))
+
   (defn flush-out []
-    (when (pos? (length obuf))
-      (send (merge base {:out (string obuf)}))
-      (buffer/clear obuf))
-    (when (pos? (length ebuf))
-      (send (merge base {:err (string ebuf)}))
-      (buffer/clear ebuf)))
+    (send-buffered obuf :out)
+    (send-buffered ebuf :err))
 
   (defn pull-input
     "Block until the client delivers more stdin, appending it to `inbuf` and
@@ -105,6 +106,16 @@
                       "from the nREPL client: emits a need-input status and "
                       "waits for a stdin op. Returns the buffer, including the "
                       "trailing newline (or whatever precedes end-of-input).")})
+
+  # Output is held until the form ends, and the real flush and eflush do
+  # nothing to a buffer. Shadow them so code that flushes (e.g. before a long
+  # wait) sends its output right away, as it would on a terminal.
+  (put env 'flush
+       @{:value (fn flush [] (send-buffered obuf :out) nil)
+         :doc "(flush)\n\nSend the output so far to the nREPL client."})
+  (put env 'eflush
+       @{:value (fn eflush [] (send-buffered ebuf :err) nil)
+         :doc "(eflush)\n\nSend the error output so far to the nREPL client."})
 
   # The evaluator runs in run-context's inner eval fiber, whose environment IS
   # the session env. Bind :out/:err with `setdyn` (not `with-dyns`) so the

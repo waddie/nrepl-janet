@@ -20,7 +20,7 @@
 
 (def server-version
   "Version reported under `versions` in `describe`."
-  "0.4.3")
+  "0.5.0")
 
 (def supported-ops
   "Ops advertised by `describe`. Clients query this on connect, so partial
@@ -206,12 +206,14 @@
     (unknown-session ctx msg)))
 
 (defn- op-lookup
-  "Return doc/arglists/source metadata for a symbol (`:sym`) in the session env."
+  "Return doc/arglists/source metadata for a symbol (`:sym`) in the session env.
+  An unbound symbol gets an empty list, as on nREPL: CIDER takes any dict for a
+  symbol it found."
   [msg ctx]
   (if-let [s (session-for ctx msg)]
     ((in ctx :send) {:id (get msg :id)
                      :session (get msg :session)
-                     :info (or (lookup-info s (string (get msg :sym ""))) {})
+                     :info (or (lookup-info s (string (get msg :sym ""))) @[])
                      :status ["done"]})
     (unknown-session ctx msg)))
 

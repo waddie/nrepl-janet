@@ -104,6 +104,40 @@
         (assert (status-has? r "done") "reading input without stdin completes")
         (assert (not (status-has? r "need-input")) "no need-input without stdin")))
 
+    (let [r (within (client/completions conn session "printl"))]
+      (assert (status-has? r "done") "completions completes")
+      (assert (find |(= "println" ($ :candidate)) (get r :completions))
+              "completions offers clojure.core names"))
+    (within (client/eval-code conn session "(def proof-var 1)"))
+    (let [r (within (client/completions conn session "proof-v"))]
+      (assert (find |(= "proof-var" ($ :candidate)) (get r :completions))
+              "completions offers what the session defined"))
+
+    (let [r (within (client/lookup conn session "println"))
+          info (get r :info)]
+      (assert (status-has? r "done") "lookup completes")
+      (assert (= "println" (get info :name)) "lookup gives the name")
+      (assert (= "clojure.core" (get info :ns)) "lookup gives the ns"))
+    # nREPL sends an empty list rather than a dict for a symbol it can't find.
+    (let [r (within (client/lookup conn session "no-such-var"))]
+      (assert (status-has? r "done") "lookup of an unknown symbol completes")
+      (assert (not (status-has? r "error")) "lookup of an unknown symbol isn't an error")
+      (assert (empty? (get r :info)) "lookup of an unknown symbol gives no info"))
+
+    (let [r (within (client/load-file-code conn session "(def y 7) (+ y 1)"
+                                           {:file-path "/tmp/proof.clj"
+                                            :file-name "proof.clj"}))]
+      (assert (status-has? r "done") "load-file completes")
+      (assert (= "8" (get r :value)) "load-file gives the last form's value"))
+    (let [r (within (client/eval-code conn session "y"))]
+      (assert (= "7" (get r :value)) "what load-file defined persists"))
+    (let [r (within (client/load-file-code conn session
+                                           "(throw (ex-info \"boom\" {}))"))]
+      (assert (status-has? r "eval-error") "a throw in load-file surfaces as eval-error")
+      (assert (status-has? r "done") "a throw in load-file still completes")
+      (assert (get r :ex) "a throw in load-file carries ex")
+      (assert (nil? (get r :value)) "a throw in load-file gives no value"))
+
     # Servers that hide close in describe still support it.
     (let [r (within (client/close-session conn session))]
       (assert (status-has? r "done") "close completes"))))

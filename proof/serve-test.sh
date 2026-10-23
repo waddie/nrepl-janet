@@ -13,9 +13,9 @@ failed=""
 for args in "" split-output empty-messages last-value no-err error-with-done \
   no-op-echo no-close-op no-interrupt no-stdin read-line-throws \
   string-versions no-session-closed shared-state socket-sessions any-session \
-  ns-fallback ns-error eof-error unsorted-keys byte-writes batched-writes \
-  hang-up -like=babashka -like=clojure-clr -like=basilisp -like=jank \
-  -like=dialtone -like=repartee; do
+  ns-fallback ns-error eof-error late-exception drop-queued interrupt-elsewhere \
+  unsorted-keys byte-writes batched-writes hang-up -like=clojure -like=babashka \
+  -like=clojure-clr -like=basilisp -like=jank -like=dialtone -like=repartee; do
   echo "--- proof serve ${args:-(nREPL)}"
   # $args is unquoted on purpose: the empty run passes no arguments.
   proof serve -listen 127.0.0.1:$port $args &

@@ -44,3 +44,14 @@ values = ["1", "2"]
 code = "(getline)"
 value = '@"proof\n"'
 eof = '@""'
+
+[snippets.sleep]
+code = '(do (prin "proof") (flush) (ev/sleep 60))'
+out = "proof"
+
+[snippets.completion]
+code = "string/forma"
+value = "string/format"
+
+[snippets.lookup]
+code = "print"

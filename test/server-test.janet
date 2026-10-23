@@ -70,6 +70,13 @@
     (assert (= "o" (out-of msgs)) "prin output stays in out")
     (assert (= "e" (err-of msgs)) "eprin output goes to err"))
 
+  # --- flush sends the output so far, before the form ends -------------------
+  (let [msgs (client/request c {:op "eval" :id "fl1" :session session
+                                :code "(do (prin \"a\") (flush) (eprin \"b\") (eflush) (prin \"c\"))"})
+        outs (keep (fn [m] (or (get m :out) (get m :err))) msgs)]
+    (assert (deep= @["a" "b" "c"] (map string outs))
+            "flush and eflush send what's buffered right away"))
+
   # --- eval and load-file without code report no-code/no-file -----------------
   (let [msgs (client/request c {:op "eval" :id "nc1" :session session})]
     (assert (find-status msgs "no-code") "eval without code reports no-code")
@@ -241,10 +248,10 @@
     (assert (= "math/abs" (string (get info :name))) "lookup reports the full symbol as the name")
     (assert (= "" (string (get info :ns ""))) "qualified symbol still reports a blank namespace"))
 
-  # --- lookup of an unknown symbol yields an empty info map -------------------
+  # --- lookup of an unknown symbol yields an empty info list ------------------
   (let [msgs (client/request c {:op "lookup" :id "k2" :session session :sym "no-such-binding-xyz"})
-        m (find-status msgs "done")]
-    (assert (empty? (get m :info {})) "lookup of unknown symbol returns empty info"))
+        info (get (find-status msgs "done") :info)]
+    (assert (and (indexed? info) (empty? info)) "lookup of unknown symbol returns an empty list"))
 
   # --- completions filters bindings by prefix ---------------------------------
   (let [msgs (client/request c {:op "completions" :id "p1" :session session :prefix "map"})

@@ -71,7 +71,9 @@
 
     (let [r (within (client/eval-code conn session
                                       "(throw (ex-info \"boom\" {}))"))]
-      (assert (status-has? r "eval-error") "a throw surfaces as eval-error")
+      # nbb and let-go send err and ex without the eval-error status.
+      (assert (or (status-has? r "eval-error") (get r :ex))
+              "a throw surfaces as eval-error or ex")
       (assert (status-has? r "done") "a throw still completes")
       (assert (get r :ex) "a throw carries ex"))
 
@@ -99,10 +101,20 @@
         (within (client/send-stdin conn session "hi\n"))
         (let [r (within (ev/take result))]
           (assert (= "\"got hi\"" (get r :value)) "eval resumes with the input")))
-      # Without stdin, reading input returns or throws right away.
-      (let [r (within (client/eval-code conn session "(read-line)"))]
-        (assert (status-has? r "done") "reading input without stdin completes")
-        (assert (not (status-has? r "need-input")) "no need-input without stdin")))
+      # Without stdin, reading input returns or throws right away, or waits
+      # until its session closes (let-go, which has no interrupt either), so
+      # read in a session of its own.
+      (let [reader (string (get (within (client/clone-session conn)) :new-session))
+            id (client/send-async conn {:op "eval" :session reader
+                                        :code "(read-line)"})
+            result (ev/chan 1)]
+        (ev/spawn (ev/give result (client/await-result conn id)))
+        (def [quick r0] (protect (ev/with-deadline 1 (ev/take result))))
+        (unless quick (within (client/close-session conn reader)))
+        (let [r (if quick r0 (within (ev/take result)))]
+          (assert (status-has? r "done") "reading input without stdin completes")
+          (assert (not (status-has? r "need-input")) "no need-input without stdin"))
+        (when quick (within (client/close-session conn reader)))))
 
     (let [r (within (client/completions conn session "printl"))]
       (assert (status-has? r "done") "completions completes")
@@ -133,7 +145,8 @@
       (assert (= "7" (get r :value)) "what load-file defined persists"))
     (let [r (within (client/load-file-code conn session
                                            "(throw (ex-info \"boom\" {}))"))]
-      (assert (status-has? r "eval-error") "a throw in load-file surfaces as eval-error")
+      (assert (or (status-has? r "eval-error") (get r :ex))
+              "a throw in load-file surfaces as eval-error or ex")
       (assert (status-has? r "done") "a throw in load-file still completes")
       (assert (get r :ex) "a throw in load-file carries ex")
       (assert (nil? (get r :value)) "a throw in load-file gives no value"))

@@ -55,3 +55,7 @@ value = "string/format"
 
 [snippets.lookup]
 code = "print"
+
+# The version of nrepl-janet, for the report.
+[snippets.version]
+code = '''(get-in (require "nrepl/ops") ['server-version :value])'''
